@@ -52,10 +52,8 @@ export const getAllEvents = async (req: any, res: Response) => {
       };
     });
 
-    res.setHeader(
-      "Cache-Control",
-      "public, s-maxage=60, stale-while-revalidate=120"
-    );
+    // Per-user myRegistrationStatus must not be cached across viewers
+    res.setHeader("Cache-Control", "private, no-store");
 
     return res.json({
       events: eventsWithCounts,
@@ -108,6 +106,7 @@ export const getEventById = async (req: any, res: Response) => {
     }
 
     const { _count, registrations, ...eventData } = event as any;
+    res.setHeader("Cache-Control", "private, no-store");
     return res.json({
       event: {
         ...eventData,
@@ -231,28 +230,28 @@ export const registerEvent = async (req: any, res: Response) => {
       return res.status(404).json({ message: "Event not found" });
     }
 
-    const registration = await prisma.$transaction(async (tx) => {
-      const confirmedCount = await tx.eventRegistration.count({
-        where: {
-          eventId,
-          status: CONFIRMED,
-        },
-      });
+    // Sequential queries (not $transaction): Neon serverless/HTTP does not
+    // reliably commit interactive transactions.
+    const confirmedCount = await prisma.eventRegistration.count({
+      where: {
+        eventId,
+        status: CONFIRMED,
+      },
+    });
 
-      const status: typeof CONFIRMED | typeof WAITLISTED =
-        event.maxCapacity == null || confirmedCount < event.maxCapacity
-          ? CONFIRMED
-          : WAITLISTED;
+    const status: typeof CONFIRMED | typeof WAITLISTED =
+      event.maxCapacity == null || confirmedCount < event.maxCapacity
+        ? CONFIRMED
+        : WAITLISTED;
 
-      return tx.eventRegistration.create({
-        data: { userId, eventId, status },
-        include: {
-          event: {
-            select: { title: true, maxCapacity: true },
-          },
-          user: { select: { firstName: true, lastName: true } },
+    const registration = await prisma.eventRegistration.create({
+      data: { userId, eventId, status },
+      include: {
+        event: {
+          select: { title: true, maxCapacity: true },
         },
-      });
+        user: { select: { firstName: true, lastName: true } },
+      },
     });
 
     const message =
@@ -306,35 +305,41 @@ export const cancelRegistration = async (req: any, res: Response) => {
         .json({ message: "You are not registered for this event" });
     }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.eventRegistration.delete({
-        where: {
-          userId_eventId: {
-            userId,
-            eventId,
-          },
+    await prisma.eventRegistration.delete({
+      where: {
+        userId_eventId: {
+          userId,
+          eventId,
         },
+      },
+    });
+
+    // If a confirmed seat is free, promote the oldest waitlisted signup.
+    // Sequential queries: Neon serverless/HTTP does not reliably commit
+    // interactive $transaction callbacks, so promotion was being skipped.
+    const confirmedCount = await prisma.eventRegistration.count({
+      where: { eventId, status: CONFIRMED },
+    });
+    const hasFreeSeat =
+      event.maxCapacity == null || confirmedCount < event.maxCapacity;
+
+    if (hasFreeSeat) {
+      const nextWaitlisted = await prisma.eventRegistration.findFirst({
+        where: {
+          eventId,
+          status: WAITLISTED,
+        },
+        orderBy: { registeredAt: "asc" },
       });
 
-      // Only a confirmed cancellation frees a seat for waitlist promotion
-      if (registration.status === CONFIRMED) {
-        const nextWaitlisted = await tx.eventRegistration.findFirst({
-          where: {
-            eventId,
-            status: WAITLISTED,
-          },
-          orderBy: { registeredAt: "asc" },
+      if (nextWaitlisted) {
+        await prisma.eventRegistration.update({
+          where: { id: nextWaitlisted.id },
+          data: { status: CONFIRMED },
         });
-
-        if (nextWaitlisted) {
-          await tx.eventRegistration.update({
-            where: { id: nextWaitlisted.id },
-            data: { status: CONFIRMED },
-          });
-          // TODO: notify the promoted user (email/push) when notification support exists
-        }
+        // TODO: notify the promoted user (email/push) when notification support exists
       }
-    });
+    }
 
     return res
       .status(200)

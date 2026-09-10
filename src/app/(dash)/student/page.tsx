@@ -46,6 +46,9 @@ function StudentDashboardContent() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["my-registrations"],
     queryFn: async () => (await api.get("/events/registered")).data,
+    staleTime: 0,
+    refetchOnWindowFocus: true,
+    refetchInterval: 5000,
   });
 
   // Blog: my submissions

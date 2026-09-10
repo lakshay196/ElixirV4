@@ -40,7 +40,10 @@ export default function EventsGrid({ page }: { page: number }) {
         pagination?: { page: number; pages: number };
       };
     },
-    staleTime: 60_000,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+    refetchInterval: 5000,
   });
 
   const { data: registrationsResponse } = useQuery({
@@ -63,7 +66,10 @@ export default function EventsGrid({ page }: { page: number }) {
         };
       }
     },
-    staleTime: 60_000,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+    refetchInterval: 5000,
   });
 
   const events = eventsResponse?.events ?? [];
